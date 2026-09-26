@@ -1,51 +1,58 @@
 # gchat
 
-A tiny, dependency-free CLI that posts a message to a Google Chat space via an
-Incoming Webhook. Built so any CI pipeline can drop a one-line call at the end
-of a job and have it show up in Chat.
+A tiny, dependency-free CLI that posts a message to a Google Chat space via the
+Chat REST API with OAuth 2.0. Works with personal Google accounts and Google
+Workspace — no webhook or organization account required.
 
 ## How it works
 
-Google Chat spaces support "Incoming Webhooks" — a secret URL you POST JSON
-to, no OAuth or service account required. `notify_chat.py` reads that URL
-from a `.env` file and sends your message to it.
+`notify_chat.py` calls the Google Chat API with a short-lived access token,
+refreshing it automatically from a stored refresh token. `setup_oauth.py` does
+the one-time browser-based consent flow to create that token file.
 
-## Setup (on your Linux server)
+## Setup
 
-### 1. Create a Google Chat space and webhook
+### 1. Enable the Google Chat API and create OAuth credentials
 
-1. In Google Chat, create (or pick) a space you want CI notifications to land
-   in — e.g. a space called "CI Alerts". Turn on notifications for it so it
-   pings you like a DM would.
-2. Click the space name at the top > **Apps & integrations** > **Add webhook**.
-3. Name it (e.g. "CI Notifier"), click **Save**, then copy the generated
-   webhook URL.
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) and create or
+   select a project.
+2. **APIs & Services → Enable APIs** → search for "Google Chat API" → Enable.
+3. **APIs & Services → Credentials → Create Credentials → OAuth client ID**.
+   - Application type: **Desktop app**.
+   - Name it anything (e.g. "gchat notifier").
+4. Download the generated `credentials.json` and place it next to this script.
 
-### 2. Clone this repo and configure it
+> If prompted to configure the OAuth consent screen, set it to **Internal** (if
+> Workspace) or **External** with yourself as a test user. You only need the
+> `chat.messages.create` scope.
+
+### 2. Clone the repo and authorize it
 
 ```bash
-git clone <this-repo-url> /opt/gchat-notify   # or wherever you keep it
+git clone <this-repo-url> /opt/gchat-notify
 cd /opt/gchat-notify
 cp .env.example .env
-chmod +x notify_chat.py
+chmod +x notify_chat.py setup_oauth.py
+python3 setup_oauth.py
 ```
 
-Edit `.env` and paste your webhook URL:
+A browser window will open for Google sign-in and consent. After you approve,
+`token.json` is saved next to the script — keep it private (it's git-ignored).
+
+### 3. Configure your space ID
+
+Find your space ID in the Google Chat URL when you're viewing the space:
 
 ```
-GOOGLE_CHAT_WEBHOOK_URL=https://chat.googleapis.com/v1/spaces/AAA.../messages?key=...&token=...
+https://chat.google.com/room/XXXXXXXXXXXXXXXXX/...
+                             ↑ this is your SPACE_ID
 ```
 
-`.env` is git-ignored, so it stays local to the server.
+Edit `.env`:
 
-### 3. Check Python is available
-
-```bash
-python3 --version
 ```
-
-Any Python 3.6+ works — the script uses only the standard library, so
-there's nothing to `pip install`.
+GOOGLE_CHAT_SPACE_ID=spaces/XXXXXXXXXXXXXXXXX
+```
 
 ### 4. Test it
 
@@ -53,11 +60,7 @@ there's nothing to `pip install`.
 ./notify_chat.py "Hello from the CI server"
 ```
 
-You should see the message appear in the Chat space within a couple seconds.
-
 ### 5. Call it from your CI pipelines
-
-At the end of a pipeline's bash script:
 
 ```bash
 if ./deploy.sh; then
@@ -67,7 +70,7 @@ else
 fi
 ```
 
-You can also pipe log output in as the message body:
+Pipe log output as the message body:
 
 ```bash
 tail -n 20 build.log | ./notify_chat.py --status failure --title "Build Failed"
@@ -80,21 +83,33 @@ notify_chat.py [message] [options]
 
   message            Message text. If omitted, read from stdin.
   --title TEXT        Bold header line shown above the message.
-  --status {success,failure,warning,info}
+  --status {failure,info,success,warning}
                       Prepends a ✅ / ❌ / ⚠️ / ℹ️ icon.
   --thread-key KEY    Groups messages into a single Chat thread.
-  --webhook-url URL   Override GOOGLE_CHAT_WEBHOOK_URL for this call.
+  --space-id ID       Override GOOGLE_CHAT_SPACE_ID for this call.
   --quiet             Suppress the "Sent" confirmation on success.
 ```
 
-Exit code is `0` on success and `1` on any failure (missing config, network
-error, or Chat API rejection) — safe to check in a pipeline if you want to
-react to notification failures specifically.
+Exit code is `0` on success and `1` on any failure — safe to check in pipelines.
 
-## Multiple pipelines, multiple spaces
+## Token management
 
-If different pipelines should post to different spaces, either:
+`token.json` stores your refresh token and is updated automatically when the
+access token expires (every hour). You should not need to re-run `setup_oauth.py`
+unless you revoke the app's access at
+[myaccount.google.com/permissions](https://myaccount.google.com/permissions).
 
-- Export `GOOGLE_CHAT_WEBHOOK_URL` in that pipeline's own environment (it
-  takes precedence over `.env`), or
-- Pass `--webhook-url` explicitly per call.
+## Multiple spaces
+
+Pass `--space-id` per call, or set `GOOGLE_CHAT_SPACE_ID` in the environment
+before running (overrides `.env`).
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `notify_chat.py` | Main CLI — send messages |
+| `setup_oauth.py` | One-time OAuth setup — creates `token.json` |
+| `credentials.json` | OAuth client secrets from Google Cloud Console (git-ignored) |
+| `token.json` | Saved tokens, auto-refreshed (git-ignored) |
+| `.env` | Your space ID config (git-ignored) |

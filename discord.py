@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
-"""Send a message to a Google Chat space via an Incoming Webhook.
-
-Note: Incoming Webhooks require a Google Workspace account. For personal
-Google accounts, use notify_chat_oauth.py instead.
+"""Send a message to a Discord channel via an Incoming Webhook.
 
 Usage:
-    ./notify_chat.py "Deploy finished"
-    ./notify_chat.py --status success --title "Nightly Build" "Build #245 completed in 3m12s"
-    tail -n 20 build.log | ./notify_chat.py --status failure --title "Build Failed"
+    ./discord.py "Deploy finished"
+    ./discord.py --status success --title "Nightly Build" "Build #245 completed in 3m12s"
+    tail -n 20 build.log | ./discord.py --status failure --title "Build Failed"
 
 Configuration comes from environment variables, loaded from a .env file
-(next to this script, or in the current directory) if present. CI-provided
-environment variables always take precedence over .env values.
+(next to this script, or in the current directory) if present.
 
 Required:
-    GOOGLE_CHAT_WEBHOOK_URL   The Incoming Webhook URL for the target space.
+    DISCORD_WEBHOOK_URL   The webhook URL for the target channel.
+                          Get it from: Channel Settings > Integrations > Webhooks > New Webhook.
 """
 
 import argparse
@@ -22,7 +19,6 @@ import json
 import os
 import sys
 import urllib.error
-import urllib.parse
 import urllib.request
 
 STATUS_ICONS = {
@@ -55,11 +51,11 @@ def find_and_load_dotenv():
         load_dotenv(cwd_env)
 
 
-def build_text(title, status, message):
+def build_content(title, status, message):
     parts = []
     icon = STATUS_ICONS.get(status, "")
     if title:
-        header = f"{icon} *{title}*".strip() if icon else f"*{title}*"
+        header = f"{icon} **{title}**".strip() if icon else f"**{title}**"
         parts.append(header)
     elif icon:
         parts.append(icon)
@@ -68,17 +64,19 @@ def build_text(title, status, message):
     return "\n".join(parts)
 
 
-def send(webhook_url, text, thread_key=None):
+def send(webhook_url, content, thread_id=None):
     url = webhook_url
-    if thread_key:
-        sep = "&" if "?" in url else "?"
-        url = f"{url}{sep}threadKey={urllib.parse.quote(thread_key)}"
+    if thread_id:
+        url += f"?thread_id={thread_id}"
 
-    payload = json.dumps({"text": text}).encode("utf-8")
+    payload = json.dumps({"content": content}).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=payload,
-        headers={"Content-Type": "application/json; charset=UTF-8"},
+        headers={
+            "Content-Type": "application/json; charset=UTF-8",
+            "User-Agent": "gchat-notify/1.0",
+        },
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
@@ -86,22 +84,23 @@ def send(webhook_url, text, thread_key=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Send a Google Chat message via Incoming Webhook.")
+    parser = argparse.ArgumentParser(description="Send a Discord message via Incoming Webhook.")
     parser.add_argument("message", nargs="?", default=None, help="Message body. Reads stdin if omitted.")
     parser.add_argument("--title", default=None, help="Bold header line for the message.")
     parser.add_argument("--status", choices=sorted(STATUS_ICONS), default=None, help="Adds a status icon.")
-    parser.add_argument("--thread-key", default=None, help="Group messages into a Chat thread.")
-    parser.add_argument("--webhook-url", default=None, help="Override GOOGLE_CHAT_WEBHOOK_URL.")
+    parser.add_argument("--thread-id", default=None, help="Post into a specific Discord thread (numeric ID).")
+    parser.add_argument("--webhook-url", default=None, help="Override DISCORD_WEBHOOK_URL for this call.")
     parser.add_argument("--quiet", action="store_true", help="Suppress success output.")
     args = parser.parse_args()
 
     find_and_load_dotenv()
 
-    webhook_url = args.webhook_url or os.environ.get("GOOGLE_CHAT_WEBHOOK_URL")
+    webhook_url = args.webhook_url or os.environ.get("DISCORD_WEBHOOK_URL")
     if not webhook_url:
         print(
-            "Error: GOOGLE_CHAT_WEBHOOK_URL is not set.\n"
-            "Set it in a .env file next to notify_chat.py, or export it, or pass --webhook-url.",
+            "Error: DISCORD_WEBHOOK_URL is not set.\n"
+            "Set it in a .env file next to discord.py, or export it, or pass --webhook-url.\n"
+            "Get it from: Channel Settings > Integrations > Webhooks > New Webhook.",
             file=sys.stderr,
         )
         return 1
@@ -110,19 +109,19 @@ def main():
     if message is None and not sys.stdin.isatty():
         message = sys.stdin.read().strip()
 
-    text = build_text(args.title, args.status, message)
-    if not text:
+    content = build_content(args.title, args.status, message)
+    if not content:
         print("Error: no message provided (arg, stdin, --title, or --status).", file=sys.stderr)
         return 1
 
     try:
-        status, body = send(webhook_url, text, args.thread_key)
+        status, body = send(webhook_url, content, args.thread_id)
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
-        print(f"Error: Google Chat rejected the message (HTTP {e.code}): {body}", file=sys.stderr)
+        print(f"Error: Discord rejected the message (HTTP {e.code}): {body}", file=sys.stderr)
         return 1
     except urllib.error.URLError as e:
-        print(f"Error: could not reach Google Chat: {e.reason}", file=sys.stderr)
+        print(f"Error: could not reach Discord: {e.reason}", file=sys.stderr)
         return 1
 
     if not args.quiet:
